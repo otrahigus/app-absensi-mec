@@ -1,4 +1,4 @@
-# 📸 Sistem Absen Wajah Anak Kampung
+# 📸 Sistem Absen Wajah Siswa MEC
 
 Sistem absensi otomatis berbasis pengenalan wajah yang bisa diakses dari 
 HP.
