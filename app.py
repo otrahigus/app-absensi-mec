@@ -4,8 +4,16 @@ import numpy as np
 import pandas as pd
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from PIL import Image
 from streamlit_gsheets import GSheetsConnection
+
+WIB = ZoneInfo("Asia/Jakarta")
+
+
+def now_wib():
+    """Waktu saat ini di WIB (UTC+7), berapapun timezone server-nya."""
+    return datetime.now(WIB)
 
 # ------------------------------------------------------------------
 # PATH & KONFIGURASI
@@ -124,7 +132,7 @@ def read_attendance():
 
 def mark_attendance(name):
     """Catat kehadiran ke Google Sheets; return False kalau sudah absen hari ini."""
-    now = datetime.now()
+    now = now_wib()
     date_str = now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H:%M:%S")
 
@@ -163,6 +171,7 @@ st.set_page_config(page_title="Absensi Wajah", page_icon="🧑‍💻")
 st.title("🧑‍💻 Sistem Absensi Wajah")
 
 menu = st.sidebar.radio("Menu", ["Daftar Wajah Baru", "Absen Wajah", "Lihat Rekap"])
+st.sidebar.caption(f"🕒 Waktu server (WIB): {now_wib().strftime('%Y-%m-%d %H:%M:%S')}")
 
 # =================== DAFTAR WAJAH BARU ===================
 if menu == "Daftar Wajah Baru":
