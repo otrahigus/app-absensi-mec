@@ -8,20 +8,6 @@ from PIL import Image
 from streamlit_gsheets import GSheetsConnection
 
 # ------------------------------------------------------------------
-# PATH & SETUP
-# ------------------------------------------------------------------
-DATASET_DIR = "dataset"
-TRAINER_PATH = "trainer/trainer.yml"
-LABELS_PATH = "trainer/labels.csv"import streamlit as st
-import cv2
-import numpy as np
-import pandas as pd
-import os
-from datetime import datetime
-from PIL import Image
-from streamlit_gsheets import GSheetsConnection
-
-# ------------------------------------------------------------------
 # PATH & KONFIGURASI
 # ------------------------------------------------------------------
 DATASET_DIR = "dataset"
