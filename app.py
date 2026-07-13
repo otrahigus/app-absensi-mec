@@ -1,320 +1,188 @@
-import streamlit as st
-import cv2
-import numpy as np
-import pandas as pd
+"""
+📸 Sistem Absen Wajah Siswa MEC (versi perbaikan)
+
+Perbaikan utama dari versi sebelumnya:
+- Pendaftaran wajah (ambil foto + hitung embedding) HANYA dilakukan SEKALI
+  per siswa lewat menu "Daftar Wajah Baru".
+- Menu "Absen Wajah" TIDAK meminta data lagi - cukup ambil foto, sistem
+  otomatis mengenali siapa siswanya dari data yang sudah tersimpan lalu
+  langsung mencatat ke Google Sheets.
+- Menyimpan embedding secara lokal (data/embeddings.pkl) sehingga tidak perlu
+  menghubungi API eksternal atau menghitung ulang wajah tiap kali absen.
+- Mencegah absen ganda: satu siswa hanya tercatat sekali per hari.
+"""
+
 import os
-from datetime import datetime
-from zoneinfo import ZoneInfo
-from PIL import Image
-from streamlit_gsheets import GSheetsConnection
+import tempfile
+import streamlit as st
+import pandas as pd
 
-WIB = ZoneInfo("Asia/Jakarta")
+from utils import face_recognition as fr
+from utils import sheets as sh
 
+st.set_page_config(page_title="Absen Wajah MEC", page_icon="📸", layout="centered")
 
-def now_wib():
-    """Waktu saat ini di WIB (UTC+7), berapapun timezone server-nya."""
-    return datetime.now(WIB)
-
-# ------------------------------------------------------------------
-# PATH & KONFIGURASI
-# ------------------------------------------------------------------
-DATASET_DIR = "dataset"
-TRAINER_PATH = "trainer/trainer.yml"
-LABELS_PATH = "trainer/labels.csv"
-GSHEET_WORKSHEET = "Sheet1"          # sesuaikan kalau nama sheet-mu beda
-
-PHOTOS_PER_REGISTRATION = 5          # jumlah foto saat registrasi (sudut berbeda)
-MIN_FACE_SIZE = 120                  # px minimum wajah supaya tidak terlalu kecil/jauh
-CONFIDENCE_THRESHOLD_DEFAULT = 70    # LBPH: makin KECIL nilainya = makin mirip
-
-os.makedirs(DATASET_DIR, exist_ok=True)
-os.makedirs("trainer", exist_ok=True)
+MENU = ["🏠 Beranda", "📝 Daftar Wajah Baru", "📷 Absen Wajah", "📊 Lihat Rekap", "⚙️ Kelola Data Wajah"]
 
 
-@st.cache_resource
-def load_cascade():
-    return cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+def simpan_upload_sementara(uploaded_file_or_camera) -> str:
+    """Simpan foto (dari kamera atau upload) ke file sementara agar bisa diproses DeepFace."""
+    suffix = ".jpg"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp.write(uploaded_file_or_camera.getbuffer())
+    tmp.close()
+    return tmp.name
+
+
+def halaman_beranda():
+    st.title("📸 Sistem Absen Wajah Siswa MEC")
+    st.write(
+        "Sistem absensi otomatis berbasis pengenalan wajah. "
+        "**Daftarkan wajah siswa cukup sekali**, setelah itu siswa cukup "
+        "melakukan absen dengan foto — sistem akan mengenali wajah secara otomatis."
     )
-
-
-face_cascade = load_cascade()
-
-
-# ------------------------------------------------------------------
-# HELPER: DETEKSI & KUALITAS WAJAH
-# ------------------------------------------------------------------
-def get_face(image_bgr):
-    """
-    Deteksi wajah pada gambar. Return (face_gray_200x200, error_message).
-    Kalau berhasil: (face, None). Kalau gagal: (None, "pesan error").
-    """
-    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    gray = cv2.equalizeHist(gray)  # normalisasi pencahayaan, bantu akurasi di foto HP
-
-    faces = face_cascade.detectMultiScale(
-        gray, scaleFactor=1.2, minNeighbors=6, minSize=(MIN_FACE_SIZE, MIN_FACE_SIZE)
+    st.markdown(
+        """
+        ### Alur pemakaian
+        1. **Daftar Wajah Baru** (dilakukan sekali per siswa, oleh admin/guru)
+        2. **Absen Wajah** (dilakukan siswa setiap hari, tinggal foto)
+        3. **Lihat Rekap** (melihat/mengunduh data absensi)
+        """
     )
-
-    if len(faces) == 0:
-        return None, ("Wajah tidak terdeteksi. Pastikan wajah menghadap kamera, "
-                       "cahaya cukup, dan tidak terlalu jauh dari kamera.")
-    if len(faces) > 1:
-        return None, "Terdeteksi lebih dari satu wajah. Pastikan hanya 1 orang di foto."
-
-    (x, y, w, h) = faces[0]
-    face = cv2.resize(gray[y:y + h, x:x + w], (200, 200))
-    return face, None
+    terdaftar = fr.list_registered()
+    st.info(f"Jumlah siswa yang sudah terdaftar: **{len(terdaftar)}**")
 
 
-# ------------------------------------------------------------------
-# HELPER: TRAINING & MODEL
-# ------------------------------------------------------------------
-def train_model():
-    """Latih ulang model LBPH dari semua foto di folder dataset/."""
-    faces, labels = [], []
-    label_map = {}
-    current_label = 0
+def halaman_daftar_wajah():
+    st.title("📝 Daftar Wajah Baru")
+    st.caption("Dilakukan SEKALI saja per siswa. Setelah ini siswa tinggal absen tanpa perlu daftar ulang.")
 
-    for person_name in sorted(os.listdir(DATASET_DIR)):
-        person_dir = os.path.join(DATASET_DIR, person_name)
-        if not os.path.isdir(person_dir):
-            continue
+    with st.form("form_daftar", clear_on_submit=True):
+        nis = st.text_input("NIS / ID Siswa")
+        nama = st.text_input("Nama Lengkap")
+        kelas = st.text_input("Kelas")
+        sumber_foto = st.radio("Ambil foto dari", ["Kamera", "Upload File"], horizontal=True)
 
-        label_map[current_label] = person_name
-        for img_name in os.listdir(person_dir):
-            img_path = os.path.join(person_dir, img_name)
-            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-            if img is not None:
-                faces.append(img)
-                labels.append(current_label)
-        current_label += 1
-
-    if len(faces) == 0:
-        return False, "Belum ada data wajah tersimpan."
-
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.train(faces, np.array(labels))
-    recognizer.save(TRAINER_PATH)
-
-    pd.DataFrame(list(label_map.items()), columns=["label", "name"]).to_csv(
-        LABELS_PATH, index=False
-    )
-    return True, f"Model dilatih dari {len(faces)} foto, {len(label_map)} orang."
-
-
-def load_model():
-    """Muat model yang sudah dilatih, kalau ada."""
-    if not os.path.exists(TRAINER_PATH) or not os.path.exists(LABELS_PATH):
-        return None, None
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.read(TRAINER_PATH)
-    labels_df = pd.read_csv(LABELS_PATH)
-    label_map = dict(zip(labels_df["label"], labels_df["name"]))
-    return recognizer, label_map
-
-
-# ------------------------------------------------------------------
-# HELPER: GOOGLE SHEETS
-# ------------------------------------------------------------------
-def get_gsheets_connection():
-    return st.connection("gsheets", type=GSheetsConnection)
-
-
-def read_attendance():
-    conn = get_gsheets_connection()
-    df = conn.read(worksheet=GSHEET_WORKSHEET, ttl=0)
-    df = df.dropna(how="all")
-    if df.empty:
-        df = pd.DataFrame(columns=["name", "date", "time"])
-    return df
-
-
-def mark_attendance(name):
-    """Catat kehadiran ke Google Sheets; return False kalau sudah absen hari ini."""
-    now = now_wib()
-    date_str = now.strftime("%Y-%m-%d")
-    time_str = now.strftime("%H:%M:%S")
-
-    conn = get_gsheets_connection()
-    df = read_attendance()
-
-    already = ((df["name"] == name) & (df["date"] == date_str)).any()
-    if already:
-        return False
-
-    new_row = pd.DataFrame([[name, date_str, time_str]], columns=["name", "date", "time"])
-    updated_df = pd.concat([df, new_row], ignore_index=True)
-    conn.update(worksheet=GSHEET_WORKSHEET, data=updated_df)
-    return True
-
-
-# ------------------------------------------------------------------
-# SESSION STATE UNTUK ALUR REGISTRASI MULTI-FOTO
-# ------------------------------------------------------------------
-def init_registration_state():
-    st.session_state.setdefault("reg_saved_count", 0)
-    st.session_state.setdefault("reg_cam_key", 0)
-    st.session_state.setdefault("reg_active_name", "")
-
-
-def reset_registration_state():
-    st.session_state["reg_saved_count"] = 0
-    st.session_state["reg_cam_key"] += 1
-    st.session_state["reg_active_name"] = ""
-
-
-# ------------------------------------------------------------------
-# UI
-# ------------------------------------------------------------------
-st.set_page_config(page_title="Absensi Wajah", page_icon="🧑‍💻")
-st.title("🧑‍💻 Sistem Absensi Wajah")
-
-menu = st.sidebar.radio("Menu", ["Daftar Wajah Baru", "Absen Wajah", "Lihat Rekap"])
-st.sidebar.caption(f"🕒 Waktu server (WIB): {now_wib().strftime('%Y-%m-%d %H:%M:%S')}")
-
-# =================== DAFTAR WAJAH BARU ===================
-if menu == "Daftar Wajah Baru":
-    st.header("Daftar Wajah Baru")
-    st.caption(
-        f"Cukup daftar **sekali**. Ambil {PHOTOS_PER_REGISTRATION} foto berturut-turut "
-        "(hadap depan, sedikit miring kiri, sedikit miring kanan) untuk hasil terbaik. "
-        "Setelah selesai, model otomatis dilatih dan langsung bisa dipakai absen."
-    )
-
-    init_registration_state()
-
-    name = st.text_input("Nama lengkap", value=st.session_state["reg_active_name"])
-
-    existing_names = [d for d in os.listdir(DATASET_DIR) if os.path.isdir(os.path.join(DATASET_DIR, d))]
-    safe_name = name.strip().replace(" ", "_")
-    if safe_name and safe_name in existing_names:
-        st.info(f"'{name}' sudah pernah didaftarkan. Mengambil foto baru akan MENAMBAH data "
-                f"(memperkuat akurasi), bukan menghapus data lama.")
-
-    if not name.strip():
-        st.warning("Isi nama dulu sebelum mengambil foto.")
-    else:
-        st.session_state["reg_active_name"] = name
-        progress = st.session_state["reg_saved_count"]
-        st.progress(min(progress / PHOTOS_PER_REGISTRATION, 1.0))
-        st.write(f"Foto tersimpan: **{progress} / {PHOTOS_PER_REGISTRATION}**")
-
-        if progress < PHOTOS_PER_REGISTRATION:
-            photo = st.camera_input(
-                f"Ambil foto ke-{progress + 1}",
-                key=f"reg_cam_{st.session_state['reg_cam_key']}",
-            )
-
-            if photo is not None:
-                img = Image.open(photo)
-                img_bgr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-                face, err = get_face(img_bgr)
-
-                if face is None:
-                    st.error(err)
-                else:
-                    person_dir = os.path.join(DATASET_DIR, safe_name)
-                    os.makedirs(person_dir, exist_ok=True)
-                    existing_count = len(os.listdir(person_dir))
-                    save_path = os.path.join(person_dir, f"{existing_count + 1}.jpg")
-                    cv2.imwrite(save_path, face)
-
-                    st.session_state["reg_saved_count"] += 1
-                    st.session_state["reg_cam_key"] += 1  # reset widget kamera supaya minta foto baru
-                    st.success(f"Foto {st.session_state['reg_saved_count']} tersimpan.")
-                    st.rerun()
+        foto = None
+        if sumber_foto == "Kamera":
+            foto = st.camera_input("Ambil foto wajah")
         else:
-            st.success(f"{PHOTOS_PER_REGISTRATION} foto sudah diambil. Melatih model...")
-            with st.spinner("Melatih model..."):
-                ok, msg = train_model()
-            if ok:
-                st.success(f"✅ '{name}' berhasil didaftarkan dan siap dipakai untuk absen! ({msg})")
-            else:
-                st.error(msg)
-            reset_registration_state()
+            foto = st.file_uploader("Upload foto wajah", type=["jpg", "jpeg", "png"])
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if 0 < progress < PHOTOS_PER_REGISTRATION:
-                if st.button("Selesai sekarang & latih model"):
-                    with st.spinner("Melatih model..."):
-                        ok, msg = train_model()
-                    if ok:
-                        st.success(f"✅ '{name}' berhasil didaftarkan ({msg})")
-                    else:
-                        st.error(msg)
-                    reset_registration_state()
-                    st.rerun()
-        with col2:
-            if progress > 0:
-                if st.button("Batalkan & mulai ulang"):
-                    reset_registration_state()
-                    st.rerun()
+        submit = st.form_submit_button("Daftarkan Wajah")
 
-    st.divider()
-    with st.expander("🔄 Latih ulang model manual (opsional)"):
-        st.caption("Biasanya tidak perlu — model otomatis dilatih setiap selesai registrasi. "
-                   "Gunakan ini kalau kamu menambah/menghapus foto langsung di folder dataset/.")
-        if st.button("Latih Ulang Model Sekarang"):
-            with st.spinner("Melatih model..."):
-                ok, msg = train_model()
-            if ok:
-                st.success(msg)
-            else:
-                st.error(msg)
+    if submit:
+        if not nis or not nama or not kelas:
+            st.error("Mohon lengkapi NIS, Nama, dan Kelas.")
+        elif foto is None:
+            st.error("Mohon ambil atau upload foto terlebih dahulu.")
+        else:
+            with st.spinner("Memproses wajah..."):
+                path = simpan_upload_sementara(foto)
+                try:
+                    pesan = fr.register_face(nis.strip(), nama.strip(), kelas.strip(), path)
+                    st.success(pesan)
+                except ValueError:
+                    st.error("Wajah tidak terdeteksi pada foto. Coba foto dengan pencahayaan lebih baik.")
+                finally:
+                    os.remove(path)
 
-# =================== ABSEN WAJAH ===================
-elif menu == "Absen Wajah":
-    st.header("Absen Wajah")
-    recognizer, label_map = load_model()
 
-    if recognizer is None:
-        st.warning(
-            "Model belum dilatih. Buka menu 'Daftar Wajah Baru' dan daftarkan wajah dulu."
-        )
-    else:
-        confidence_threshold = st.slider(
-            "Ambang kemiripan (semakin KECIL = semakin ketat)",
-            min_value=30, max_value=100, value=CONFIDENCE_THRESHOLD_DEFAULT, step=1,
-        )
+def halaman_absen():
+    st.title("📷 Absen Wajah")
+    st.caption("Cukup ambil foto — sistem otomatis mengenali wajah dari data yang sudah terdaftar.")
 
-        photo = st.camera_input("Ambil foto untuk absen")
-        if photo:
-            img = Image.open(photo)
-            img_bgr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-            face, err = get_face(img_bgr)
+    foto = st.camera_input("Ambil foto untuk absen")
 
-            if face is None:
-                st.warning(err)
-            else:
-                label, confidence = recognizer.predict(face)
-                # LBPH: confidence makin RENDAH = makin mirip
-                if confidence < confidence_threshold:
-                    name = label_map.get(label, "Unknown")
-                    marked = mark_attendance(name)
-                    if marked:
-                        st.success(f"✅ Absen berhasil: **{name}** (confidence: {confidence:.1f})")
-                    else:
-                        st.info(f"{name} sudah absen hari ini.")
-                else:
-                    st.error(
-                        f"Wajah tidak dikenali (confidence: {confidence:.1f}, "
-                        f"ambang batas {confidence_threshold}). "
-                        "Coba lagi dengan pencahayaan lebih baik, atau daftarkan wajah dulu kalau belum pernah."
-                    )
+    if foto is not None:
+        with st.spinner("Mengenali wajah..."):
+            path = simpan_upload_sementara(foto)
+            try:
+                nis, nama, kelas, jarak = fr.recognize_face(path)
+            except ValueError:
+                nis = None
+            finally:
+                os.remove(path)
 
-# =================== LIHAT REKAP ===================
-elif menu == "Lihat Rekap":
-    st.header("Rekap Absensi")
-    df = read_attendance()
-    if not df.empty:
-        st.dataframe(df.sort_values(by=["date", "time"], ascending=False), use_container_width=True)
-        st.download_button(
-            "⬇️ Unduh CSV",
-            df.to_csv(index=False),
-            file_name="attendance.csv",
-            mime="text/csv",
-        )
-    else:
-        st.info("Belum ada data absensi.")
+        if nis is None:
+            st.error("❌ Wajah tidak dikenali. Pastikan sudah terdaftar di menu 'Daftar Wajah Baru', "
+                      "atau coba dengan pencahayaan/posisi wajah yang lebih baik.")
+        else:
+            st.success(f"Wajah dikenali: **{nama}** ({kelas}) — NIS {nis}")
+            with st.spinner("Mencatat absensi ke Google Sheets..."):
+                pesan = sh.catat_absen(nis, nama, kelas)
+            st.info(pesan)
+
+
+def halaman_rekap():
+    st.title("📊 Lihat Rekap Absensi")
+
+    with st.spinner("Mengambil data dari Google Sheets..."):
+        try:
+            data = sh.ambil_rekap()
+        except Exception as e:
+            st.error(f"Gagal mengambil data dari Google Sheets: {e}")
+            return
+
+    if not data:
+        st.warning("Belum ada data absensi.")
+        return
+
+    df = pd.DataFrame(data)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        tanggal_filter = st.text_input("Filter tanggal (YYYY-MM-DD, kosongkan untuk semua)")
+    with col2:
+        nama_filter = st.text_input("Filter nama (kosongkan untuk semua)")
+
+    if tanggal_filter:
+        df = df[df["Tanggal"] == tanggal_filter]
+    if nama_filter:
+        df = df[df["Nama"].str.contains(nama_filter, case=False, na=False)]
+
+    st.dataframe(df, use_container_width=True)
+    st.download_button(
+        "⬇️ Unduh sebagai CSV",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name="rekap_absensi.csv",
+        mime="text/csv",
+    )
+
+
+def halaman_kelola():
+    st.title("⚙️ Kelola Data Wajah Terdaftar")
+    terdaftar = fr.list_registered()
+
+    if not terdaftar:
+        st.warning("Belum ada wajah yang terdaftar.")
+        return
+
+    df = pd.DataFrame(terdaftar)
+    st.dataframe(df, use_container_width=True)
+
+    nis_hapus = st.selectbox("Pilih NIS untuk dihapus", [d["nis"] for d in terdaftar])
+    if st.button("🗑️ Hapus Data Ini", type="secondary"):
+        pesan = fr.delete_face(nis_hapus)
+        st.success(pesan)
+        st.rerun()
+
+
+def main():
+    st.sidebar.title("📸 Menu")
+    pilihan = st.sidebar.radio("Navigasi", MENU)
+
+    if pilihan == "🏠 Beranda":
+        halaman_beranda()
+    elif pilihan == "📝 Daftar Wajah Baru":
+        halaman_daftar_wajah()
+    elif pilihan == "📷 Absen Wajah":
+        halaman_absen()
+    elif pilihan == "📊 Lihat Rekap":
+        halaman_rekap()
+    elif pilihan == "⚙️ Kelola Data Wajah":
+        halaman_kelola()
+
+
+if __name__ == "__main__":
+    main()
