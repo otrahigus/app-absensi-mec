@@ -1,4 +1,18 @@
-# Virtual Environment
+# Virtual environment
+venv/
+.venv/
+
+# Data wajah (jangan ikut ke GitHub — berisi data pribadi)
+dataset/
+trainer/
+
+# Kredensial rahasia — JANGAN PERNAH push file ini
+.streamlit/secrets.toml
+
+# System files
+.DS_Store
+__pycache__/
+*.pyc# Virtual Environment
 venv/
 env/
 ENV/
