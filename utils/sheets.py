@@ -44,9 +44,38 @@ FACE_SHEET_NAME = "DataWajah"  # nama tab/worksheet untuk data wajah terdaftar (
 FACE_HEADER = ["NIS", "Nama", "Kelas", "Embedding", "TanggalDaftar"]
 
 
+class SecretsBelumDiatur(Exception):
+    """Dilempar saat Secrets (SPREADSHEET_ID / gcp_service_account) belum diisi di Streamlit Cloud."""
+    pass
+
+
+def _pastikan_secrets_ada():
+    """
+    Cek Secrets dengan aman TANPA membuat Streamlit melempar exception mentah
+    (StreamlitAPIException: No secrets found) saat file/menu Secrets kosong.
+    Kalau belum lengkap, lempar error kita sendiri yang pesannya jelas dan
+    bisa ditangkap+ditampilkan rapi di app.py.
+    """
+    try:
+        ada_spreadsheet_id = bool(st.secrets.get("SPREADSHEET_ID"))
+        ada_service_account = "gcp_service_account" in st.secrets
+    except Exception:
+        # Terjadi kalau belum ada Secrets sama sekali (file/menu kosong total)
+        ada_spreadsheet_id = False
+        ada_service_account = False
+
+    if not ada_spreadsheet_id or not ada_service_account:
+        raise SecretsBelumDiatur(
+            "Secrets belum lengkap. Buka menu app di Streamlit Cloud → titik tiga (⋮) → "
+            "'Settings' → 'Secrets', lalu isi 'SPREADSHEET_ID' dan blok '[gcp_service_account]' "
+            "sesuai panduan di README.md bagian 'Setup Google Sheets'."
+        )
+
+
 @st.cache_resource(show_spinner=False)
 def _get_client():
     """Otentikasi ke Google Sheets. Menggunakan cache agar tidak login berulang kali."""
+    _pastikan_secrets_ada()
     if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
@@ -59,7 +88,7 @@ def _get_worksheet():
     client = _get_client()
     spreadsheet_id = st.secrets.get("SPREADSHEET_ID", None)
     if not spreadsheet_id:
-        raise RuntimeError("SPREADSHEET_ID belum diatur di st.secrets.")
+        raise SecretsBelumDiatur("SPREADSHEET_ID belum diatur di Secrets.")
 
     sh = client.open_by_key(spreadsheet_id)
     try:
@@ -119,7 +148,7 @@ def _get_face_worksheet():
     client = _get_client()
     spreadsheet_id = st.secrets.get("SPREADSHEET_ID", None)
     if not spreadsheet_id:
-        raise RuntimeError("SPREADSHEET_ID belum diatur di st.secrets.")
+        raise SecretsBelumDiatur("SPREADSHEET_ID belum diatur di Secrets.")
 
     sh = client.open_by_key(spreadsheet_id)
     try:

@@ -19,10 +19,43 @@ import pandas as pd
 
 from utils import face_recognition as fr
 from utils import sheets as sh
+from utils.sheets import SecretsBelumDiatur
 
 st.set_page_config(page_title="Absen Wajah MEC", page_icon="📸", layout="centered")
 
 MENU = ["🏠 Beranda", "📝 Daftar Wajah Baru", "📷 Absen Wajah", "📊 Lihat Rekap", "⚙️ Kelola Data Wajah"]
+
+
+def tampilkan_pesan_secrets_kurang(e: Exception):
+    st.error("⚠️ Aplikasi belum terhubung ke Google Sheets.")
+    st.markdown(
+        f"""
+        **Detail:** {e}
+
+        **Cara memperbaiki:**
+        1. Buka aplikasi ini di [Streamlit Cloud](https://share.streamlit.io/), klik titik tiga (⋮) di app kamu → **Settings** → **Secrets**
+        2. Tempel isi berikut (ganti nilai sesuai punya kamu), lalu **Save**:
+        ```toml
+        SPREADSHEET_ID = "ID_SPREADSHEET_KAMU"
+
+        [gcp_service_account]
+        type = "service_account"
+        project_id = "..."
+        private_key_id = "..."
+        private_key = "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"
+        client_email = "...@...iam.gserviceaccount.com"
+        client_id = "..."
+        auth_uri = "https://accounts.google.com/o/oauth2/auth"
+        token_uri = "https://oauth2.googleapis.com/token"
+        auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+        client_x509_cert_url = "..."
+        ```
+        3. Pastikan spreadsheet-nya sudah di-**share** ke email `client_email` di atas dengan akses **Editor**
+        4. Reboot app dari menu yang sama
+
+        Lengkapnya ada di `README.md` bagian "Setup Google Sheets".
+        """
+    )
 
 
 def simpan_upload_sementara(uploaded_file_or_camera) -> str:
@@ -49,8 +82,11 @@ def halaman_beranda():
         3. **Lihat Rekap** (melihat/mengunduh data absensi)
         """
     )
-    terdaftar = fr.list_registered()
-    st.info(f"Jumlah siswa yang sudah terdaftar: **{len(terdaftar)}**")
+    try:
+        terdaftar = fr.list_registered()
+        st.info(f"Jumlah siswa yang sudah terdaftar: **{len(terdaftar)}**")
+    except SecretsBelumDiatur as e:
+        tampilkan_pesan_secrets_kurang(e)
 
 
 def halaman_daftar_wajah():
@@ -82,6 +118,8 @@ def halaman_daftar_wajah():
                 try:
                     pesan = fr.register_face(nis.strip(), nama.strip(), kelas.strip(), path)
                     st.success(pesan)
+                except SecretsBelumDiatur as e:
+                    tampilkan_pesan_secrets_kurang(e)
                 except ValueError:
                     st.error("Wajah tidak terdeteksi pada foto. Coba foto dengan pencahayaan lebih baik.")
                 finally:
@@ -99,10 +137,15 @@ def halaman_absen():
             path = simpan_upload_sementara(foto)
             try:
                 nis, nama, kelas, jarak = fr.recognize_face(path)
+            except SecretsBelumDiatur as e:
+                os.remove(path)
+                tampilkan_pesan_secrets_kurang(e)
+                return
             except ValueError:
                 nis = None
             finally:
-                os.remove(path)
+                if os.path.exists(path):
+                    os.remove(path)
 
         if nis is None:
             st.error("❌ Wajah tidak dikenali. Pastikan sudah terdaftar di menu 'Daftar Wajah Baru', "
@@ -110,8 +153,11 @@ def halaman_absen():
         else:
             st.success(f"Wajah dikenali: **{nama}** ({kelas}) — NIS {nis}")
             with st.spinner("Mencatat absensi ke Google Sheets..."):
-                pesan = sh.catat_absen(nis, nama, kelas)
-            st.info(pesan)
+                try:
+                    pesan = sh.catat_absen(nis, nama, kelas)
+                    st.info(pesan)
+                except SecretsBelumDiatur as e:
+                    tampilkan_pesan_secrets_kurang(e)
 
 
 def halaman_rekap():
@@ -120,6 +166,9 @@ def halaman_rekap():
     with st.spinner("Mengambil data dari Google Sheets..."):
         try:
             data = sh.ambil_rekap()
+        except SecretsBelumDiatur as e:
+            tampilkan_pesan_secrets_kurang(e)
+            return
         except Exception as e:
             st.error(f"Gagal mengambil data dari Google Sheets: {e}")
             return
@@ -152,7 +201,11 @@ def halaman_rekap():
 
 def halaman_kelola():
     st.title("⚙️ Kelola Data Wajah Terdaftar")
-    terdaftar = fr.list_registered()
+    try:
+        terdaftar = fr.list_registered()
+    except SecretsBelumDiatur as e:
+        tampilkan_pesan_secrets_kurang(e)
+        return
 
     if not terdaftar:
         st.warning("Belum ada wajah yang terdaftar.")
