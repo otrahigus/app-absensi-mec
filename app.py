@@ -80,8 +80,11 @@ def halaman_beranda():
         3. **Lihat Rekap** (melihat/mengunduh data absensi)
         """
     )
-    terdaftar = fr.list_registered()
-    st.info(f"Jumlah siswa yang sudah terdaftar: **{len(terdaftar)}**")
+    try:
+        terdaftar = fr.list_registered()
+        st.info(f"Jumlah siswa yang sudah terdaftar: **{len(terdaftar)}**")
+    except SecretsBelumDiatur:
+        st.warning("⚠️ Belum terhubung ke Google Sheets. Cek menu Secrets di Streamlit Cloud.")
 
 
 def halaman_daftar_wajah():
