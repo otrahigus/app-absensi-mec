@@ -29,9 +29,7 @@ MENU = ["🏠 Beranda", "📝 Daftar Wajah Baru", "📷 Absen Wajah", "📊 Liha
 def tampilkan_pesan_secrets_kurang(e: Exception):
     st.error("⚠️ Aplikasi belum terhubung ke Google Sheets.")
     st.markdown(
-        f"""
-        **Detail:** {e}
-
+        """
         **Cara memperbaiki:**
         1. Buka aplikasi ini di [Streamlit Cloud](https://share.streamlit.io/), klik titik tiga (⋮) di app kamu → **Settings** → **Secrets**
         2. Tempel isi berikut (ganti nilai sesuai punya kamu), lalu **Save**:
