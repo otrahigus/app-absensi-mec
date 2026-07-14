@@ -19,6 +19,8 @@ jadi:
 """
 
 import os
+import random
+from datetime import datetime
 import numpy as np
 from deepface import DeepFace
 
@@ -43,6 +45,20 @@ def get_embedding(image_path: str) -> np.ndarray:
         enforce_detection=True,
     )
     return np.array(result[0]["embedding"])
+
+
+def generate_nis() -> str:
+    """
+    Buat ID siswa otomatis (format: MEC-YYMMDD-XXXX), supaya admin tidak perlu
+    mengetik NIS manual saat mendaftarkan wajah. Dicek dulu ke Google Sheets
+    agar tidak bentrok dengan yang sudah ada (sangat jarang terjadi, tapi dijaga).
+    """
+    for _ in range(5):
+        kandidat = f"MEC-{datetime.now().strftime('%y%m%d')}-{random.randint(1000, 9999)}"
+        if sh.cek_nis_terdaftar(kandidat) is None:
+            return kandidat
+    # fallback super jarang kepakai: tambahkan mikrodetik supaya pasti unik
+    return f"MEC-{datetime.now().strftime('%y%m%d%H%M%S%f')}"
 
 
 def register_face(nis: str, nama: str, kelas: str, image_path: str) -> str:

@@ -80,11 +80,8 @@ def halaman_beranda():
         3. **Lihat Rekap** (melihat/mengunduh data absensi)
         """
     )
-    try:
-        terdaftar = fr.list_registered()
-        st.info(f"Jumlah siswa yang sudah terdaftar: **{len(terdaftar)}**")
-    except SecretsBelumDiatur as e:
-        tampilkan_pesan_secrets_kurang(e)
+    terdaftar = fr.list_registered()
+    st.info(f"Jumlah siswa yang sudah terdaftar: **{len(terdaftar)}**")
 
 
 def halaman_daftar_wajah():
@@ -92,7 +89,6 @@ def halaman_daftar_wajah():
     st.caption("Dilakukan SEKALI saja per siswa. Setelah ini siswa tinggal absen tanpa perlu daftar ulang.")
 
     with st.form("form_daftar", clear_on_submit=True):
-        nis = st.text_input("NIS / ID Siswa")
         nama = st.text_input("Nama Lengkap")
         kelas = st.text_input("Kelas")
         sumber_foto = st.radio("Ambil foto dari", ["Kamera", "Upload File"], horizontal=True)
@@ -106,15 +102,16 @@ def halaman_daftar_wajah():
         submit = st.form_submit_button("Daftarkan Wajah")
 
     if submit:
-        if not nis or not nama or not kelas:
-            st.error("Mohon lengkapi NIS, Nama, dan Kelas.")
+        if not nama or not kelas:
+            st.error("Mohon lengkapi Nama dan Kelas.")
         elif foto is None:
             st.error("Mohon ambil atau upload foto terlebih dahulu.")
         else:
             with st.spinner("Memproses wajah..."):
                 path = simpan_upload_sementara(foto)
                 try:
-                    pesan = fr.register_face(nis.strip(), nama.strip(), kelas.strip(), path)
+                    nis = fr.generate_nis()
+                    pesan = fr.register_face(nis, nama.strip(), kelas.strip(), path)
                     st.success(pesan)
                 except SecretsBelumDiatur as e:
                     tampilkan_pesan_secrets_kurang(e)
